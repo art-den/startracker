@@ -16,7 +16,7 @@
 
 #defines
 	DEFS := -D$(CHIP)
-	DEFS += -DHL_STM32F1XX
+	DEFS += -DSTM32F1
 	DEFS += -DMICRO_FORMAT_DOUBLE
 
 
@@ -28,7 +28,9 @@
 
 	INCLUDE := src
 	INCLUDE += $(CMSIS)/include
-	INCLUDE += src/stm32_hl
+	INCLUDE += external-libs/libopencm3/include
+
+	LIBS		= external-libs/libopencm3/lib/libopencm3_stm32f1.a
 
 ###########################################################
 	TOOL	= arm-none-eabi-
@@ -106,7 +108,7 @@
 	LD_FLAGS	+= -Wl,-Map="$(MAP)",--cref
 	LD_FLAGS	+= -ffunction-sections -fdata-sections
 	LD_FLAGS	+= -T$(LD_SCRIPT)
-	LD_FLAGS	+= -specs=nano.specs
+	LD_FLAGS	+= -specs=nano.specs -specs=nosys.specs
 
 
 ifeq ($(USE_LTO),YES)
@@ -141,7 +143,7 @@ $(OK): $(ELF)
 
 $(ELF):	$(OBJS) makefile
 	@echo --- linking...
-	$(LD) $(OBJS) $(LD_FLAGS) -o "$(ELF)"
+	$(LD) $(OBJS) $(LIBS) $(LD_FLAGS) -o "$(ELF)"
 
 $(HEX): $(ELF)
 	@echo --- make hex...
