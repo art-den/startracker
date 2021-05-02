@@ -5,32 +5,29 @@
 	OPTIMIZE     = -O3
 	USE_LTO      = YES
 
-# CMSIS directory
-	CMSIS       = src/stm32f1_cmsis
-
 # chip config
 	MCU          = cortex-m3
 	CHIP         = STM32F103xB
-	LD_SCRIPT    = $(CMSIS)/linker/STM32F103XB_FLASH.ld
-	STARTUP_FILE = $(CMSIS)/startup/startup_stm32f103xb.s
+	LD_SCRIPT    = src/stm32f103cbt6.ld
 
 #defines
 	DEFS := -D$(CHIP)
 	DEFS += -DSTM32F1
 	DEFS += -DMICRO_FORMAT_DOUBLE
+	DEFS += -DMGFXPP_MONO
 
 
 # source directories (all *.c and *.cpp files included)
 	DIRS := src
-	DIRS += $(CMSIS)/startup
-	DIRS += src/stm32_hl
-	DIRS += src/micro_format
+	DIRS += src/mgfxpp
+	DIRS += src/mgfxpp/fonts
+	DIRS += src/fonts
 
 	INCLUDE := src
-	INCLUDE += $(CMSIS)/include
+	INCLUDE := src/mgfxpp
 	INCLUDE += external-libs/libopencm3/include
 
-	LIBS		= external-libs/libopencm3/lib/libopencm3_stm32f1.a
+	LIBS    = external-libs/libopencm3/lib/libopencm3_stm32f1.a
 
 ###########################################################
 	TOOL	= arm-none-eabi-
@@ -63,8 +60,7 @@
 	INCS	:= $(patsubst %, -I "%", $(INCLUDE))
 
 #calc obj files list
-	OBJS	:= $(STARTUP_FILE)
-	OBJS	+= $(wildcard $(addsuffix /*.c, $(DIRS)))
+	OBJS	:= $(wildcard $(addsuffix /*.c, $(DIRS)))
 	OBJS	+= $(wildcard $(addsuffix /*.cpp, $(DIRS)))
 
 	OBJS	:= $(notdir $(OBJS))
@@ -89,6 +85,7 @@
 	CFLAGS	+= -g3
 	CFLAGS	+= -ffunction-sections -fdata-sections
 	CFLAGS	+= -Wno-incompatible-pointer-types
+	CFLAGS	+= -specs=nosys.specs
 
 	CXXFLAGS	= $(FLAGS)
 	CXXFLAGS	+= $(OPTIMIZE)
@@ -99,6 +96,7 @@
 	CXXFLAGS	+= -funsigned-bitfields
 	CXXFLAGS	+= -std=c++17
 	CXXFLAGS	+= -Wno-register
+	CXXFLAGS	+= -specs=nosys.specs
 
 	LD_FLAGS	= -mcpu=$(MCU)
 	LD_FLAGS	+= -mthumb
@@ -108,7 +106,7 @@
 	LD_FLAGS	+= -Wl,-Map="$(MAP)",--cref
 	LD_FLAGS	+= -ffunction-sections -fdata-sections
 	LD_FLAGS	+= -T$(LD_SCRIPT)
-	LD_FLAGS	+= -specs=nano.specs -specs=nosys.specs
+	LD_FLAGS	+= -specs=nano.specs -specs=nosys.specs -nostartfiles
 
 
 ifeq ($(USE_LTO),YES)
