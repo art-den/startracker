@@ -118,9 +118,12 @@ static void led_off()
 	gpio_set(LED_PIN_PORT, LED_PIN_IDX);
 }
 
+volatile uint16_t revert_btn_pressed_cnt = 0;
+constexpr uint16_t PressBtnTimeMs = 10;
+
 static bool is_revert_btn_pressed()
 {
-	return !gpio_get(REVERT_PIN_PORT, REVERT_PIN_IDX);
+	return revert_btn_pressed_cnt > (TimeTimerFreq/PressBtnTimeMs);
 }
 
 static void init_hardware()
@@ -261,41 +264,47 @@ static void recalc_speed(bool store_angle)
 	double ideal_angle = calc_ideal_angle();
 
 	debug_printf(
-		"angle = {:.5}, freq = {:.3}, timer = {}, angle_diff = {:.5}\n",
+		"angle = {:.5}, freq = {:.3}, timer = {}, angle_diff = {:+.5}\n",
 		180.0*angle/Pi,
 		steps_in_second,
 		reload_value,
-		180.0*(ideal_angle - angle)/Pi
+		180.0*(angle - ideal_angle)/Pi
 	);
 }
 
-static void make_move()
+static void make_random_move()
 {
 	if (!step_timer_enabled) return;
 
 	double angle_diff = Pi*MoveMaxAngle/180.0 * (double)(rand() - RAND_MAX/2) / (double)RAND_MAX;
 	debug_printf("Move. angle_diff={:.5}\n", 180.0*angle_diff/Pi);
-	double new_angle = calc_ideal_angle() - angle_diff;
-	double cur_angle = calc_angle(get_l());
-	bool cur_sign = (cur_angle > new_angle);
 
 	enable_step_timer(false);
-
-	if (!cur_sign)
-		gpio_set(DIR_PIN_PORT, DIR_PIN_IDX);
-	else
-		gpio_clear(DIR_PIN_PORT, DIR_PIN_IDX);
 
 	timer_set_period(STEP_TIMER, TimerClock/(MotorSteps * MotorMicroSteps/8) - 1);
 
 	delay_ms(1);
 
-	enable_step_timer(true);
-
+	bool last_sign = false;
+	bool first_time = true;
 	for (;;)
 	{
-		bool sign = (calc_angle(get_l()) > new_angle);
-		if (sign != cur_sign) break;
+		double new_angle = calc_ideal_angle() + angle_diff;
+		double cur_angle = calc_angle(get_l());
+		bool cur_sign = (cur_angle > new_angle);
+
+		if ((last_sign != cur_sign) && !first_time) break;
+
+		if (!cur_sign)
+			gpio_set(DIR_PIN_PORT, DIR_PIN_IDX);
+		else
+			gpio_clear(DIR_PIN_PORT, DIR_PIN_IDX);
+
+		if (first_time)
+			enable_step_timer(true);
+
+		last_sign = cur_sign;
+		first_time = false;
 	}
 
 	enable_step_timer(false);
@@ -444,6 +453,12 @@ extern "C" void TIME_TIMER_ISR()
 	{
 		timer_clear_flag(TIME_TIMER, TIM_SR_UIF);
 		++time_counter;
+
+		bool revert_btn_pressed = !gpio_get(REVERT_PIN_PORT, REVERT_PIN_IDX);
+		if (revert_btn_pressed && (revert_btn_pressed_cnt < 2*TimeTimerFreq/PressBtnTimeMs))
+			revert_btn_pressed_cnt++;
+		else if (!revert_btn_pressed && (revert_btn_pressed_cnt > 0))
+			revert_btn_pressed_cnt--;
 	}
 }
 
@@ -459,23 +474,23 @@ int main()
 	debug_printf("value_for_srand={} (0x{:x})\n", srand_value, srand_value);
 	srand(srand_value);
 
+	bool use_random_moving = !is_revert_btn_pressed();
+	while (is_revert_btn_pressed()) delay_ms(10);
+	debug_printf("use_random_moving={}\n", use_random_moving);
+
 	start_work(true);
 
 	uint8_t recalc_speed_counter = 0;
-	unsigned revert_btn_pressed_cnt = 0;
 
 	for (;;)
 	{
 		delay_ms(10);
 
 		if (is_revert_btn_pressed())
-			revert_btn_pressed_cnt++;
-
-		if (revert_btn_pressed_cnt > 10)
 		{
-			revert_btn_pressed_cnt = 0;
 			revert();
 			start_work(true);
+			last_move_time_counter = time_counter;
 		}
 
 		recalc_speed_counter++;
@@ -485,12 +500,15 @@ int main()
 			recalc_speed(false);
 		}
 
-		auto tm_cnt = time_counter;
-		if ((tm_cnt - last_move_time_counter) / TimeTimerFreq > MovePeriod * 60)
+		if (use_random_moving)
 		{
-			last_move_time_counter = tm_cnt;
-			make_move();
-			start_work(false);
+			auto tm_cnt = time_counter;
+			if ((tm_cnt - last_move_time_counter) / TimeTimerFreq > MovePeriod * 60)
+			{
+				last_move_time_counter = tm_cnt;
+				make_random_move();
+				start_work(false);
+			}
 		}
 	}
 }
