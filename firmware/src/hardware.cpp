@@ -1,3 +1,5 @@
+#include <math.h>
+#include <limits.h>
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/timer.h>
@@ -72,6 +74,12 @@
 #define DISP_I2C I2C1
 #define DISP_I2C_RCC RCC_I2C1
 
+constexpr float MaxStepMotorAccel = 20; // rotations in sec^2
+
+constexpr unsigned TimerClock = 1'000'000;
+constexpr unsigned RecalcMotorSpeedFreq = 100; // Hz
+
+
 class Button
 {
 public:
@@ -93,14 +101,17 @@ private:
 	volatile uint16_t pressed_cnt_ = 0;
 };
 
+static volatile float desired_rotations_per_seconds = 0;
+static volatile float current_rotations_per_seconds = 0;
+
 static bool step_timer_enabled = false;
 static volatile unsigned time_counter = 0;
 static Button revert_btn;
 static Button dither_time_btn;
 static Button dither_angle_btn;
+static volatile unsigned calc_steps_timer_cnt = 0;
 
 static volatile int32_t steps_counter = 0;
-
 
 void init_hardware()
 {
@@ -211,33 +222,9 @@ void init_hardware()
 	debug_printf("rcc_ahb_frequency = {} Mhz\n", rcc_ahb_frequency / 1'000'000);
 }
 
-void enable_step_timer(bool enable)
+void set_rotations_per_seconds(float value)
 {
-	step_timer_enabled = enable;
-	if (enable)
-		timer_enable_counter(STEP_TIMER);
-	else
-		timer_disable_counter(STEP_TIMER);
-}
-
-bool is_step_timer_enabled()
-{
-	return step_timer_enabled;
-}
-
-void set_step_timer_period(uint16_t value)
-{
-	timer_set_period(STEP_TIMER, value - 1);
-}
-
-void set_forward_direction()
-{
-	gpio_set(DIR_PIN);
-}
-
-void set_revert_direction()
-{
-	gpio_clear(DIR_PIN);
+	desired_rotations_per_seconds = value;
 }
 
 void send_debug_uart_char(char chr)
@@ -347,7 +334,7 @@ void init_display()
 
 	if (!display_is_initialized) return;
 
-	Display::set_brightness(0x40);
+	Display::set_brightness(0x20);
 
 	mgfxpp::display_draw([]
 	{
@@ -360,6 +347,47 @@ bool is_display_ok()
 	return display_is_initialized;
 }
 
+static void calc_steps_timer_period()
+{
+	float cur_speed = current_rotations_per_seconds;
+	constexpr float max_v_step = MaxStepMotorAccel / RecalcMotorSpeedFreq;
+	float v_step = desired_rotations_per_seconds - cur_speed;
+	if (v_step > max_v_step)
+		v_step = max_v_step;
+	else if (v_step < -max_v_step)
+		v_step = -max_v_step;
+
+	cur_speed += v_step;
+
+	current_rotations_per_seconds = cur_speed;
+
+	float abs_speed = fabs(cur_speed);
+
+	if (abs_speed > 1e-5)
+	{
+		float steps_in_second = abs_speed / TurnsOnStep;
+		uint32_t reload_value = (uint32_t)(TimerClock / steps_in_second + 0.5);
+		if (reload_value > USHRT_MAX) reload_value = USHRT_MAX;
+		timer_set_period(STEP_TIMER, reload_value - 1);
+
+		if (cur_speed > 0.0f)
+			gpio_set(DIR_PIN);
+		else
+			gpio_clear(DIR_PIN);
+
+		if (!step_timer_enabled)
+		{
+			timer_enable_counter(STEP_TIMER);
+			step_timer_enabled = true;
+		}
+	}
+	else if (step_timer_enabled)
+	{
+		timer_disable_counter(STEP_TIMER);
+		step_timer_enabled = false;
+	}
+}
+
 extern "C" void TIME_TIMER_ISR()
 {
 	if (timer_get_flag(TIME_TIMER, TIM_SR_UIF))
@@ -370,6 +398,13 @@ extern "C" void TIME_TIMER_ISR()
 		revert_btn.tick(!gpio_get(REVERT_BTN_PIN));
 		dither_time_btn.tick(!gpio_get(DITH_TIME_BTN_PIN));
 		dither_angle_btn.tick(!gpio_get(DITH_ANGL_BTN_PIN));
+
+		++calc_steps_timer_cnt;
+		if (calc_steps_timer_cnt >= TimeTimerFreq/RecalcMotorSpeedFreq)
+		{
+			calc_steps_timer_period();
+			calc_steps_timer_cnt = 0;
+		}
 	}
 }
 

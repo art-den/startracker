@@ -2,23 +2,18 @@
 
 #include <stdint.h>
 
+#include "config.hpp"
+
 constexpr unsigned SysClockFreq = 72'000'000;
 constexpr unsigned APB1Freq = 36'000'000;
-constexpr unsigned TimerClock = 1'000'000;
+
+constexpr double TurnsOnStep = 1.0 / (MotorSteps * MotorMicroSteps); // rod rotations per one motor step
+
 constexpr unsigned TimeTimerFreq = 1'000; // Hz
-
-/* stepper motor parameters */
-
-constexpr double MotorSteps = 200.0; // steps per rotation
-constexpr int32_t MotorMicroSteps = 16; // microsteps
 
 void init_hardware();
 
-void enable_step_timer(bool enable);
-bool is_step_timer_enabled();
-void set_step_timer_period(uint16_t value);
-void set_forward_direction();
-void set_revert_direction();
+void set_rotations_per_seconds(float value);
 
 void send_debug_uart_char(char chr);
 

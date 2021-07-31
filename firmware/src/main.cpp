@@ -6,29 +6,9 @@
 #include "debug_printf.hpp"
 #include "gfx.hpp"
 
-/*****************************************************************************/
-
-// geomerty
-
-constexpr double R = 133.8; // side length of an equilateral triangle (in mm)
-constexpr double StartL = 44.2; // base length of an equilateral triangle (in mm) in start position
-constexpr double MaxL = 180.0; // (in mm)
-
-// rod parameters
-
-constexpr double RodStep = 0.8; // rod step in mm
-
-/*****************************************************************************/
-
-// periodical random moving (dithering)
-
-constexpr double MoveMaxAngle = 0.3; // °
-constexpr int32_t MovePeriod = 10; // Maximum dither period in minutes
-
 constexpr double Pi = 3.141592653589793;
 constexpr double TurnPeriod = 23.0 /*H*/ * 3600.0 + 56.0 /*M*/ * 60.0 + 4.0 /*S*/;
 constexpr double RotSpeed = 2 * Pi / TurnPeriod;
-constexpr double TurnsOnStep = 1.0 / (MotorSteps * MotorMicroSteps); // rod rotations per one motor step
 
 template <uint32_t Freq>
 class PeriodicalTimer
@@ -98,7 +78,7 @@ static void recalc_speed(bool store_angle)
 	double l = get_l();
 	if (l > MaxL)
 	{
-		enable_step_timer(false);
+		set_rotations_per_seconds(0);
 		return;
 	}
 
@@ -114,11 +94,7 @@ static void recalc_speed(bool store_angle)
 
 	double rod_rotataions_v = v / RodStep; // rod rotations in second
 
-	double steps_in_second = rod_rotataions_v / TurnsOnStep;
-
-	uint32_t reload_value = (uint32_t)(TimerClock / steps_in_second + 0.5);
-
-	set_step_timer_period(reload_value);
+	set_rotations_per_seconds((float)rod_rotataions_v);
 
 	if (store_angle)
 	{
@@ -129,130 +105,85 @@ static void recalc_speed(bool store_angle)
 	}
 
 	debug_printf(
-		"angle = {:.5}, freq = {:.3}, timer = {}, angle_diff = {:+.5}\n",
+		"angle = {:.5}, rot_per_secs = {:.5} angle_diff = {:+.5}\n",
 		180.0*angle/Pi,
-		steps_in_second,
-		reload_value,
+		rod_rotataions_v,
 		180.0*(angle - calc_ideal_angle())/Pi
 	);
 }
 
 static void make_random_move()
 {
-	if (!is_step_timer_enabled()) return;
+	set_rotations_per_seconds(0);
+
+	if (get_l() >= MaxL) return;
 
 	double MoveMaxAngleRad = Pi * dither_angle / 180.0;
 
 	double angle_diff = MoveMaxAngleRad * (double)(rand() - RAND_MAX/2) / (double)RAND_MAX;
 	debug_printf("Move. angle_diff={:.5}\n", 180.0*angle_diff/Pi);
 
-	enable_step_timer(false);
-
-	set_step_timer_period(TimerClock/(MotorSteps * MotorMicroSteps/2));
-
-	delay_ms(1);
-
-	double start_angle = calc_angle(get_l());
-	double min_angle = calc_angle(StartL);
-	if ((start_angle + angle_diff) < min_angle) return;
-
-	bool last_dir = false;
-	bool first_time = true;
-	for (;;)
+	auto make_move = [&] (const float speed)
 	{
-		double new_angle = calc_ideal_angle() + angle_diff;
-		double cur_angle = calc_angle(get_l());
-		if (fabs(start_angle - cur_angle) > MoveMaxAngleRad) break;
+		double prev_diff_abs = NAN;
+		bool prev_decrease = false;
+		bool first_time = true;
+		for (;;)
+		{
+			double new_angle = calc_ideal_angle() + angle_diff;
+			double l = get_l();
+			double cur_angle = calc_angle(l);
+			double diff = new_angle - cur_angle;
+			if ((diff < 0) && (l < (StartL + 1.0f))) break;
+			if ((diff > 0) && (l > MaxL)) break;
+			double diff_abs = fabs(diff);
+			bool cur_dir = (diff > 0);
 
-		bool cur_dir = (cur_angle > new_angle);
+			if (!isnan(prev_diff_abs))
+			{
+				bool diff_decrease = (diff_abs < prev_diff_abs);
+				if (!diff_decrease && prev_decrease) break;
+				prev_decrease = diff_decrease;
+			}
 
-		if ((last_dir != cur_dir) && !first_time) break;
+			set_rotations_per_seconds(cur_dir ? speed : -speed);
+			prev_diff_abs = diff_abs;
+			if (first_time) delay_ms(20);
+		}
+	};
 
-		if (!cur_dir)
-			set_forward_direction();
-		else
-			set_revert_direction();
-
-		if (first_time)
-			enable_step_timer(true);
-
-		last_dir = cur_dir;
-		first_time = false;
-	}
-
-	enable_step_timer(false);
+	make_move(1.00f);
+	make_move(0.05f);
 }
 
 static void revert()
 {
-	enable_step_timer(false);
-	delay_ms(10);
-
-	set_revert_direction();
-	delay_ms(10);
-
-	int steps_per_sec = 100;
-	int v = MotorSteps * MotorMicroSteps / 5;
-
-	constexpr int max_steps_per_sec = 8*MotorSteps * MotorMicroSteps;
-	bool prev_revert_btn_pressed = is_revert_btn_pressed();
+	int rot_per_sec = -5;
 
 	for (;;)
 	{
-		bool revert_btn_pressed = is_revert_btn_pressed();
-		if ((revert_btn_pressed != prev_revert_btn_pressed) && !revert_btn_pressed) v = -v;
-		prev_revert_btn_pressed = revert_btn_pressed;
-
-		delay_ms(10);
-
-		int prev_steps_per_sec = steps_per_sec;
-		steps_per_sec += v;
-
-		bool sign_changed =
-			((prev_steps_per_sec >= 0) && (steps_per_sec < 0)) ||
-			((prev_steps_per_sec <= 0) && (steps_per_sec > 0));
-
-		if (sign_changed)
+		set_rotations_per_seconds(rot_per_sec);
+		for (;;)
 		{
+			bool revert_btn_pressed = is_revert_btn_pressed();
 			if (!revert_btn_pressed) break;
-			enable_step_timer(false);
 			delay_ms(10);
-
-			if (steps_per_sec < 0)
-				set_forward_direction();
-			else
-				set_revert_direction();
 		}
 
-		if (steps_per_sec > max_steps_per_sec)
-			steps_per_sec = max_steps_per_sec;
-		if (steps_per_sec < -max_steps_per_sec)
-			steps_per_sec = -max_steps_per_sec;
+		set_rotations_per_seconds(0);
 
-		if (steps_per_sec != 0)
-			set_step_timer_period(TimerClock / abs(steps_per_sec));
+		delay_ms(300);
 
-		if (!is_step_timer_enabled())
-			enable_step_timer(true);
+		if (!is_revert_btn_pressed()) break;
+
+		rot_per_sec = -rot_per_sec;
 	}
-
-	enable_step_timer(false);
-	delay_ms(10);
 }
 
 
 static void start_work(bool store_angle)
 {
-	enable_step_timer(false);
-	delay_ms(10);
-
 	recalc_speed(store_angle);
-
-	set_forward_direction();
-
-	delay_ms(10);
-
-	enable_step_timer(true);
 }
 
 static void show_info_data()

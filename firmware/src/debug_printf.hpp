@@ -13,7 +13,7 @@ size_t debug_printf(const char* format, const Args& ... args)
 	auto uart_format_callback = [](auto, char character)
 	{
 		send_debug_uart_char(character);
-        return true;
+		return true;
 	};
 	return mf::format(uart_format_callback, nullptr, format, args...);
 }
